@@ -43,3 +43,10 @@ An automated, event-driven lead ingestion, enrichment, scoring, and routing engi
    ```bash
    git clone [https://github.com/dhrobinsystems/n8n-lead-enrichment-pipeline.git](https://github.com/dhrobinsystems/n8n-lead-enrichment-pipeline.git)
    cd n8n-lead-enrichment-pipeline
+---
+
+## ⚠️ Disclaimer
+
+This project, including all associated workflows, scripts, and documentation, is provided "as is" without warranty of any kind, express or implied. The author and contributors assume no responsibility or liability for any errors, omissions, or operational disruptions resulting from the use of these automation tools, CRM integrations, or third-party API verification calls. Always test and audit configurations thoroughly in a staging environment prior to production deployment.
+
+---
