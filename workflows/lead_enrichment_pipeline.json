@@ -1,0 +1,770 @@
+{
+  "name": "Multi-Source Lead Enrichment & Routing Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "e63e8a71-5ae3-4d79-9a75-d848cb5e6723",
+      "name": "Lead Ingest Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -368,
+        112
+      ],
+      "webhookId": "b7f1c2d4-5a6e-4f80-9c11-2d3e4f506172"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst p = raw.body ?? raw;\nconst PERSONAL = new Set(['gmail.com','googlemail.com','yahoo.com','yahoo.co.uk','ymail.com','hotmail.com','hotmail.co.uk','outlook.com','live.com','msn.com','aol.com','icloud.com','me.com','proton.me','protonmail.com','gmx.com','mail.com','zoho.com']);\nconst str = v => (v ?? '').toString().trim();\nconst normDomain = d => str(d).toLowerCase().replace(/^[a-z]+:[/][/]/, '').replace(/^www[.]/, '').split(/[/?#:]/)[0].replace(/[.]$/, '');\nconst cleanPhone = v => {\n  const s = str(v);\n  if (!s) return '';\n  const digits = s.replace(/[^0-9]/g, '');\n  const intl = s.startsWith('+') || s.startsWith('00');\n  const core = s.startsWith('00') ? digits.slice(2) : digits;\n  if (core.length < 7 || core.length > 15) return '';\n  return (intl ? '+' : '') + core;\n};\nconst email = str(p.email).toLowerCase();\nconst EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9-]+([.][a-z0-9-]+)*[.][a-z]{2,}$/;\nconst isValid = EMAIL_RE.test(email) && !email.includes('..');\nconst emailDomain = isValid ? email.split('@')[1] : '';\nconst isPersonal = isValid && PERSONAL.has(emailDomain);\nconst isCorporate = isValid && !isPersonal;\nlet domain = normDomain(p.domain);\nif (PERSONAL.has(domain)) domain = '';\nif (!domain && isCorporate) domain = emailDomain;\nconst errors = [];\nif (!isValid) errors.push('invalid_email_format');\nreturn [{ json: {\n  first_name: str(p.first_name),\n  last_name: str(p.last_name),\n  email,\n  company_name: str(p.company_name),\n  domain,\n  phone: cleanPhone(p.phone),\n  email_domain: emailDomain,\n  is_valid_email: isValid,\n  is_personal_email: isPersonal,\n  is_corporate_email: isCorporate,\n  validation_errors: errors,\n  received_at: new Date().toISOString()\n} }];"
+      },
+      "id": "c4bdd52d-2dec-4fc6-8ca8-e3e0be3db172",
+      "name": "Validate & Clean Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1000000-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.is_valid_email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c60fb29d-5565-4167-9671-5c71ef524f37",
+      "name": "Valid Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        80,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1000000-0000-4000-8000-000000000002",
+              "leftValue": "={{ $json.domain }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dd527df8-3250-4d28-bb0f-eaffe7a59ecd",
+      "name": "Has Enrichment Domain?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        288,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.apollo.io/api/v1/organizations/enrich",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "domain",
+              "value": "={{ $json.domain }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "e9dae3b5-4906-4e0d-a674-c75098d7a064",
+      "name": "Apollo Org Enrichment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        528,
+        -96
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $('Validate & Clean Lead').first().json;\nconst resp = $input.first().json ?? {};\nconst org = resp.organization ?? null;\nconst num = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);\nconst techs = org ? [...new Set([\n  ...(Array.isArray(org.technology_names) ? org.technology_names : []),\n  ...(Array.isArray(org.current_technologies) ? org.current_technologies.map(t => t && t.name) : [])\n].filter(Boolean).map(t => String(t).trim()))] : [];\nconst e = {\n  employee_count: org ? num(org.estimated_num_employees) : null,\n  estimated_revenue: org ? num(org.annual_revenue ?? org.organization_revenue) : null,\n  industry: org?.industry ?? null,\n  technologies_used: techs,\n  city: org?.city ?? null,\n  country: org?.country ?? null\n};\nconst missing = Object.entries(e)\n  .filter(([k, v]) => v === null || (Array.isArray(v) && v.length === 0))\n  .map(([k]) => k);\nlet status = 'complete';\nlet reason = null;\nif (!lead.domain) { status = 'skipped'; reason = 'no_enrichment_domain'; }\nelse if (resp.error) { status = 'failed'; reason = String(resp.error?.message ?? resp.error); }\nelse if (!org) { status = 'failed'; reason = 'no_organization_match'; }\nelse if (missing.length === 6) { status = 'failed'; reason = 'empty_organization_record'; }\nelse if (missing.length > 0) { status = 'partial'; }\nreturn [{ json: {\n  ...lead,\n  company_name: lead.company_name || org?.name || '',\n  ...e,\n  enrichment_status: status,\n  enrichment_missing_fields: missing,\n  enrichment_error: reason\n} }];"
+      },
+      "id": "23e15b5e-f1bc-462f-a23d-2846bd261b27",
+      "name": "Normalize Enrichment (Fallback Safe)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst TARGET = ['hubspot', 'salesforce', 'marketo', 'webflow'];\nconst n = d.employee_count;\nconst size = n === null ? 0 : n > 50 ? 30 : n >= 10 ? 15 : 5;\nconst matched = (d.technologies_used || []).filter(t => TARGET.some(k => String(t).toLowerCase().includes(k)));\nconst tech = matched.length ? 30 : 0;\nconst corp = d.is_corporate_email ? 20 : 0;\nconst checks = [d.first_name, d.last_name, d.email, d.company_name, d.phone, d.domain, d.employee_count, d.estimated_revenue, d.industry, (d.technologies_used || []).length ? 'y' : '', d.city, d.country];\nconst filled = checks.filter(v => v !== null && v !== undefined && v !== '').length;\nconst completeness = Math.round(20 * filled / checks.length);\nconst score = Math.min(100, size + tech + corp + completeness);\nconst tier = score >= 75 ? 1 : score >= 50 ? 2 : 3;\nconst tierLabel = tier === 1 ? 'Tier 1 - Enterprise / High Intent' : tier === 2 ? 'Tier 2 - Mid-Market' : 'Tier 3 - SMB / Low Intent';\nconst priority = tier === 1 ? 'High' : tier === 2 ? 'Medium' : 'Low';\nconst esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst fullName = ((d.first_name || '') + ' ' + (d.last_name || '')).trim() || d.email;\nconst stack = (d.technologies_used || []).slice(0, 15).join(', ') || 'Unknown';\nconst emoji = tier === 1 ? ':fire:' : ':chart_with_upwards_trend:';\nconst headline = tier === 1 ? 'HOT LEAD' : 'New Mid-Market Lead';\nconst blocks = [\n  { type: 'header', text: { type: 'plain_text', text: (emoji + ' ' + headline + ': ' + fullName).slice(0, 150), emoji: true } },\n  { type: 'section', fields: [\n    { type: 'mrkdwn', text: '*Company:*\\n' + esc(d.company_name || 'Unknown') },\n    { type: 'mrkdwn', text: '*Lead Score:*\\n' + score + '/100 (Tier ' + tier + ')' },\n    { type: 'mrkdwn', text: '*Employees:*\\n' + (n === null ? 'Unknown' : n) },\n    { type: 'mrkdwn', text: '*Industry:*\\n' + esc(d.industry || 'Unknown') }\n  ] },\n  { type: 'section', text: { type: 'mrkdwn', text: '*Tech Stack:*\\n' + esc(stack) } },\n  { type: 'context', elements: [ { type: 'mrkdwn', text: esc(d.email) + ' | ' + esc(d.domain || 'no domain') + ' | enrichment: ' + d.enrichment_status } ] }\n];\nreturn [{ json: {\n  ...d,\n  lead_score: score,\n  lead_tier: tier,\n  tier_label: tierLabel,\n  lead_priority: priority,\n  matched_target_tech: matched,\n  score_breakdown: { company_size: size, tech_fit: tech, corporate_email: corp, data_completeness: completeness },\n  slack_text: headline + ': ' + fullName + ' (' + (d.company_name || 'Unknown') + ') - Score ' + score + '/100',\n  slack_payload: JSON.stringify({ blocks })\n} }];"
+      },
+      "id": "0c7125b9-8250-4c73-92a7-c94a53c25b31",
+      "name": "Lead Scoring Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d1000000-0000-4000-8000-000000000001",
+                    "leftValue": "={{ $json.lead_tier }}",
+                    "rightValue": 1,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Tier 1"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d1000000-0000-4000-8000-000000000002",
+                    "leftValue": "={{ $json.lead_tier }}",
+                    "rightValue": 2,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Tier 2"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d1000000-0000-4000-8000-000000000003",
+                    "leftValue": "={{ $json.lead_tier }}",
+                    "rightValue": 3,
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Tier 3"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "507dc9e8-8add-4f76-9610-ece8b525ec75",
+      "name": "Route by Tier",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1232,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "companyName": "={{ $json.company_name }}",
+          "firstName": "={{ $json.first_name }}",
+          "lastName": "={{ $json.last_name }}",
+          "phoneNumber": "={{ $json.phone }}"
+        },
+        "options": {}
+      },
+      "id": "7ecc3be7-cb6e-48fe-85e9-26c8df427227",
+      "name": "T1 Upsert Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [
+        1488,
+        -192
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ properties: { dealname: $('Lead Scoring Engine').first().json.company_name + ' - Inbound Tier 1', pipeline: 'default', dealstage: 'appointmentscheduled', description: 'Inbound lead score ' + $('Lead Scoring Engine').first().json.lead_score + '/100' }, associations: [{ to: { id: String($json.vid ?? $json.id) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }] }] }) }}",
+        "options": {}
+      },
+      "id": "5ab5604b-2f57-4c19-8351-31e917f5a1a9",
+      "name": "T1 Create Deal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1728,
+        -192
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "sales-hot-leads",
+          "mode": "name"
+        },
+        "messageType": "block",
+        "blocksUi": "={{ $('Lead Scoring Engine').first().json.slack_payload }}",
+        "text": "={{ $('Lead Scoring Engine').first().json.slack_text }}",
+        "otherOptions": {}
+      },
+      "id": "45fc4ef8-59ec-426d-8f03-5ff2f6ded7d6",
+      "name": "T1 Slack Hot Lead Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1968,
+        -192
+      ],
+      "webhookId": "b0fa1392-c2f6-4442-a1ad-e80edd37ca0c",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "companyName": "={{ $json.company_name }}",
+          "firstName": "={{ $json.first_name }}",
+          "lastName": "={{ $json.last_name }}",
+          "phoneNumber": "={{ $json.phone }}"
+        },
+        "options": {}
+      },
+      "id": "b343b8ea-d144-47d4-a8ac-683f8ea670b9",
+      "name": "T2 Upsert Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [
+        1488,
+        16
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "resource": "contactList",
+        "email": "={{ $('Lead Scoring Engine').first().json.email }}",
+        "listId": "REPLACE_WITH_MIDMARKET_STATIC_LIST_ID"
+      },
+      "id": "946c7ad1-d1e8-47aa-94b2-ffcfbdde6f10",
+      "name": "T2 Add to Mid-Market List",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [
+        1728,
+        16
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "leads-midmarket",
+          "mode": "name"
+        },
+        "messageType": "block",
+        "blocksUi": "={{ $('Lead Scoring Engine').first().json.slack_payload }}",
+        "text": "={{ $('Lead Scoring Engine').first().json.slack_text }}",
+        "otherOptions": {}
+      },
+      "id": "3cd76d9b-96aa-428c-bedf-025dfd71faf4",
+      "name": "T2 Slack Standard Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1968,
+        16
+      ],
+      "webhookId": "ab6033cc-da8d-4e23-a0cf-0b1833425065",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "companyName": "={{ $json.company_name }}",
+          "firstName": "={{ $json.first_name }}",
+          "lastName": "={{ $json.last_name }}",
+          "phoneNumber": "={{ $json.phone }}"
+        },
+        "options": {}
+      },
+      "id": "150f9213-333f-434f-8a4d-7704e9ca6823",
+      "name": "T3 Upsert Contact (Low Priority)",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [
+        1488,
+        208
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "resource": "contactList",
+        "email": "={{ $('Lead Scoring Engine').first().json.email }}",
+        "listId": "REPLACE_WITH_AUTOMATED_NURTURE_STATIC_LIST_ID"
+      },
+      "id": "630935fe-9074-4650-a84d-8c3a33523922",
+      "name": "T3 Add to Automated Nurture List",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [
+        1728,
+        208
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'processed', email: $('Lead Scoring Engine').first().json.email, lead_score: $('Lead Scoring Engine').first().json.lead_score, tier: $('Lead Scoring Engine').first().json.tier_label, enrichment_status: $('Lead Scoring Engine').first().json.enrichment_status }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "54888843-0726-4688-be79-7a5cdf1a0227",
+      "name": "Respond 200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2208,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', errors: $json.validation_errors }) }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "aef35bdc-c4b5-4e27-bc2e-65bf53b20a35",
+      "name": "Respond 422 Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        288,
+        256
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f8ef151a-ff04-498c-b6b6-a54e3500324d",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "revops-alerts",
+          "mode": "name"
+        },
+        "text": "=:rotating_light: Lead pipeline failure in node \"{{ $json.execution.lastNodeExecuted }}\": {{ $json.execution.error.message }} (execution {{ $json.execution.id }})",
+        "otherOptions": {}
+      },
+      "id": "af4ab1ae-f5db-4e2d-9114-693dcc7f345a",
+      "name": "Error Alert to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        -160,
+        512
+      ],
+      "webhookId": "77873bd2-7267-493f-a0b1-5e5a0e586c33"
+    }
+  ],
+  "pinData": {
+    "Apollo Org Enrichment": [
+      {
+        "json": {
+          "organization": {
+            "name": "Acme Corp",
+            "estimated_num_employees": 240,
+            "annual_revenue": 48000000,
+            "industry": "computer software",
+            "city": "San Francisco",
+            "country": "United States",
+            "technology_names": [
+              "HubSpot",
+              "Salesforce",
+              "AWS",
+              "Slack"
+            ]
+          }
+        }
+      }
+    ],
+    "Lead Ingest Webhook": [
+      {
+        "json": {
+          "body": {
+            "first_name": "Jordan",
+            "last_name": "Reyes",
+            "email": "Jordan.Reyes@AcmeCorp.com",
+            "company_name": "Acme Corp",
+            "domain": "https://www.acmecorp.com/pricing",
+            "phone": "+1 (415) 555-0142"
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Lead Ingest Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Clean Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Clean Lead": {
+      "main": [
+        [
+          {
+            "node": "Valid Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Email?": {
+      "main": [
+        [
+          {
+            "node": "Has Enrichment Domain?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 422 Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Enrichment Domain?": {
+      "main": [
+        [
+          {
+            "node": "Apollo Org Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Enrichment (Fallback Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apollo Org Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Normalize Enrichment (Fallback Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Enrichment (Fallback Safe)": {
+      "main": [
+        [
+          {
+            "node": "Lead Scoring Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Scoring Engine": {
+      "main": [
+        [
+          {
+            "node": "Route by Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Tier": {
+      "main": [
+        [
+          {
+            "node": "T1 Upsert Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "T2 Upsert Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "T3 Upsert Contact (Low Priority)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T1 Upsert Contact": {
+      "main": [
+        [
+          {
+            "node": "T1 Create Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T1 Create Deal": {
+      "main": [
+        [
+          {
+            "node": "T1 Slack Hot Lead Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T1 Slack Hot Lead Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T2 Upsert Contact": {
+      "main": [
+        [
+          {
+            "node": "T2 Add to Mid-Market List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T2 Add to Mid-Market List": {
+      "main": [
+        [
+          {
+            "node": "T2 Slack Standard Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T2 Slack Standard Notification": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T3 Upsert Contact (Low Priority)": {
+      "main": [
+        [
+          {
+            "node": "T3 Add to Automated Nurture List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "T3 Add to Automated Nurture List": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Error Alert to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a5f998d4-0aa1-4cd7-ad8b-e053e2b082a0",
+  "meta": {
+    "instanceId": "9f337e234239f157a65c750ec6e9efa025524afc8e3f6d67e42e0c1b6be035a8"
+  },
+  "nodeGroups": [],
+  "id": "yQKd08rqKWuEypOf",
+  "tags": []
+}
